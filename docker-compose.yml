@@ -1,0 +1,96 @@
+networks:
+  elastic:
+    driver: bridge
+services:
+  setup:
+    container_name: setup
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD} # Set the Elasticsearch password environment variable
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD} # Set the Kibana password environment variable
+    command:
+      - bash
+      - -c
+      - |
+        echo "Waiting for Elasticsearch availability"; # Display message indicating the start of the wait for Elasticsearch
+        until curl -s http://elasticsearch:9200 | grep -q "missing authentication credentials"; do sleep 30; done; # Wait until Elasticsearch is available and requires authentication
+        echo "Setting kibana_system password"; # Display message indicating the start of setting Kibana system user password
+        until curl -s -X POST -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" http://elasticsearch:9200/_security/user/kibana_system/_password -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done; # Set the password for the kibana_system user
+        echo "All done!"; # Display message indicating completion of setup
+
+  elasticsearch:
+    container_name: elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    ports:
+      - 9200:9200 # Expose Elasticsearch HTTP port
+      - 9300:9300 # Expose Elasticsearch TCP transport port
+    environment:
+      - discovery.type=single-node # Configure Elasticsearch for single-node discovery
+      - cluster.name=elasticsearch # Set the name of the Elasticsearch cluster
+      - bootstrap.memory_lock=true # Enable memory lock to prevent swapping
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g # Limit Elasticsearch JVM heap size to 1GB
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD} # Set the Elasticsearch password environment variable
+      - xpack.security.enabled: true
+      # Enable SSL for transport layer: Ensures encrypted communication between Elasticsearch nodes
+      # - xpack.security.transport.ssl.enabled: true
+      # Set the SSL verification mode: Configures how nodes verify the authenticity of other nodes
+      # - xpack.security.transport.ssl.verification_mode: certificate
+      # Path to the SSL keystore: Contains the SSL certificate for this node
+      # - xpack.security.transport.ssl.keystore.path: certs/elastic-certificates.p12
+      # Path to the SSL truststore: Used to verify certificates from other nodes
+      # - xpack.security.transport.ssl.truststore.path: certs/elastic-certificates.p12
+      # Enable SSL for HTTP layer: Secures HTTP communication to and from this node
+      # - xpack.security.http.ssl.enabled: true
+      # Path to the HTTP SSL keystore: Contains the SSL certificate for HTTP communication
+      # - xpack.security.http.ssl.keystore.path: certs/elastic-certificates.p12
+      # Path to the HTTP SSL truststore: Used to verify certificates for HTTP communication
+      # - xpack.security.http.ssl.truststore.path: certs/elastic-certificates.p12
+
+    volumes:
+      - esdata:/usr/share/elasticsearch/data # Persist Elasticsearch data
+
+  kibana:
+    container_name: kibana
+    image: docker.elastic.co/kibana/kibana:8.14.0
+    ports:
+      - 5601:5601 # Expose Kibana port
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200 # Set the Elasticsearch hosts for Kibana
+      - ELASTICSEARCH_USERNAME=kibana_system # Set the Elasticsearch username for Kibana
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD} # Set the Elasticsearch password for Kibana
+      - ELASTICSEARCH_SSL_VERIFICATIONMODE=none # Disable SSL verification for Elasticsearch
+      - TELEMETRY_ENABLED=false # Disable telemetry collection
+    depends_on:
+      - elasticsearch # Ensure Elasticsearch starts before Kibana
+
+  logstash:
+    container_name: logstash
+    image: docker.elastic.co/logstash/logstash:8.14.0
+    ports:
+      - 5044:5044 # Expose Logstash Beats input port
+      # - 50000:50000 # Expose custom TCP input port
+      - ${LOGSTASH_UDP_PORT}:${LOGSTASH_UDP_PORT}/udp # Use environment variable for UDP port
+      - 9600:9600 # Expose Logstash monitoring API port
+    environment:
+      - xpack.monitoring.enabled=false # Disable X-Pack monitoring
+      - ELASTIC_USER=elastic # Set the Elasticsearch username for Logstash
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD} # Set the Elasticsearch password for Logstash
+      - ELASTIC_HOSTS=http://elasticsearch:9200 # Set the Elasticsearch hosts for Logstash
+    command:
+      - /bin/bash
+      - -c
+      - |
+        cp /usr/share/logstash/pipeline/logstash.conf /usr/share/logstash/config/logstash.conf # Copy Logstash configuration file
+        echo "Waiting for Elasticsearch availability"; # Display message indicating the start of the wait for Elasticsearch
+        until curl -s http://elasticsearch:9200 | grep -q "missing authentication credentials"; do sleep 1; done; # Wait until Elasticsearch is available and requires authentication
+        echo "Starting logstash"; # Display message indicating the start of Logstash
+        /usr/share/logstash/bin/logstash -f /usr/share/logstash/pipeline/logstash.conf # Start Logstash with specified configuration file
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf # Mount Logstash configuration file
+      - ./output.log:/usr/share/logstash/logs/output.log # Mount Logstash output log file
+    depends_on:
+      - kibana # Ensure Kibana starts before Logstash
+
+volumes:
+  esdata:
+    driver: local # Use local storage for Elasticsearch data persistence
