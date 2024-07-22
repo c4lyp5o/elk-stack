@@ -33,10 +33,7 @@ log4js.configure({
   },
   categories: {
     default: {
-      appenders: [
-        // 'logstash',
-        'console',
-      ],
+      appenders: ['logstash', 'console'],
       level: 'info',
     },
   },
